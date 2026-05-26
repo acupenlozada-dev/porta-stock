@@ -2,15 +2,13 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from streamlit_gsheets import GSheetsConnection
 import unicodedata
 
 # ══════════════════════════════════════════════
-# CONFIGURACIÓN DE LA FUENTE DE DATOS (GOOGLE SHEETS)
+# CONFIGURACIÓN DE LA FUENTE DE DATOS (URL PUBLICADA)
 # ══════════════════════════════════════════════
-SPREADSHEET_ID = "1jCAE3PbADPc7gz16UOvlpby5VzpfR3b8gLNy_4ROEe8"
-SHEET_NAME = "Report"  # ← ¡Tu pestaña en Drive debe llamarse exactamente así!
-GDRIVE_URL = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/edit#gid=0"
+# REEMPLAZA esta URL de ejemplo por el enlace largo de tipo (.csv) que copiaste en el Paso 1
+CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vS7oreK-T83qzskv37cLO49Vhbp8VU7nDKBVxG9gF8dsdtCA6fwKbMGuT2rGGZYeZZtJFgNSUJNs6SG/pub?gid=0&single=true&output=csv"
 
 R1="#C8102E"; R2="#E8394A"; R3="#FF6B7A"; RD="#8B0000"
 BG="#FDF2F3"; W="#FFFFFF"; G2="#64748b"
@@ -93,13 +91,14 @@ ALMA_PRINC  = "ALMA. PRINCIPAL"
 ALMA_ESP    = "ALMA. ESPERA"
 
 # ══════════════════════════════════════════════
-# CARGA DE DATOS DESDE DRIVE
+# CARGA DE DATOS OPTIMIZADA DESDE CSV EN LA NUBE
 # ══════════════════════════════════════════════
 @st.cache_data(show_spinner=False, ttl=600)
 def load_data():
-    conn = st.connection("gsheets", type=GSheetsConnection)
-    df = conn.read(spreadsheet=GDRIVE_URL, worksheet=SHEET_NAME, dtype=str)
+    # Lectura nativa directa via HTTP, evitando problemas de autenticación de Drive
+    df = pd.read_csv(CSV_URL, dtype=str)
     
+    # Normalizar títulos de columnas de la hoja
     def norm_col(s):
         s = str(s).strip()
         s = unicodedata.normalize("NFD", s)
@@ -107,6 +106,7 @@ def load_data():
         return s.upper().replace(" ","_").replace(".","_").replace("/","_")
     df.columns = [norm_col(c) for c in df.columns]
 
+    # Convertir variables numéricas críticas
     for col in [C["stock"], C["pvp"], C["metraje"], C["dsct"]]:
         if col in df.columns:
             df[col] = pd.to_numeric(
@@ -114,6 +114,7 @@ def load_data():
                        .str.replace(r"[^\d.\-]","",regex=True),
                 errors="coerce").fillna(0)
 
+    # Tratamiento y limpieza de columnas de texto
     text_cols = [C["item"], C["almacencod"], C["desc"], C["marca"], C["licencia"], 
                  C["linea"], C["familia"], C["subfamilia"], C["color"], C["temporada"], 
                  C["sucursal"], C["canal"], C["ubi"], C["ubicacion"], C["region"], 
@@ -124,15 +125,18 @@ def load_data():
             df[col] = df[col].fillna("Sin dato").astype(str).str.strip()
             df.loc[df[col]=="", col] = "Sin dato"
 
+    # Preservar y rellenar ceros a la izquierda para los códigos ITEM de Porta
     if C["item"] in df.columns:
         df[C["item"]] = df[C["item"]].str.split('.').str[0]
         df[C["item"]] = df[C["item"]].apply(lambda x: x.zfill(6) if x != "Sin dato" else x)
 
     df = df[df[C["item"]].notna() & (df[C["item"]] != "Sin dato")].copy()
 
+    # Excluir registros marcados para no considerar
     if C["canal"] in df.columns:
         df = df[df[C["canal"]] != "NO CONSIDERAR"].copy()
 
+    # Tipos categóricos para acelerar el procesamiento de filtros interactivos
     cat_cols = [C["ubi"], C["region"], C["sucursal"], C["linea"], C["familia"], 
                 C["marca"], C["temporada"], C["campana"], C["licencia"], C["promo"], C["vigencia"]]
     for col in cat_cols:
@@ -141,11 +145,11 @@ def load_data():
 
     return df
 
-with st.spinner("Conectando con Google Drive y cargando inventario Porta…"):
+with st.spinner("Estableciendo conexión segura y descargando stock de Porta…"):
     df_raw = load_data()
 
 # ══════════════════════════════════════════════
-# HELPERS GRÁFICOS Y DE DETALLE
+# HELPERS GRÁFICOS Y DE INTERFAZ
 # ══════════════════════════════════════════════
 PC = dict(paper_bgcolor=W, plot_bgcolor=W,
           margin=dict(l=0,r=0,t=10,b=0),
@@ -237,20 +241,20 @@ with st.sidebar:
     st.markdown(f"""
     <div style='text-align:center;margin-top:10px;background:rgba(255,255,255,.14);
                 border-radius:10px;padding:10px 8px;'>
-        <div style='font-size:1.4rem;font-weight:800;color:white;'>{m.sum():,}</div>
-        <div style='font-size:.68rem;color:rgba(255,255,255,.65);'>de {len(df_raw):,} registros</div>
+        <div style='font-size:1.4rem;font-weight:800;color:white;'>{m.sum():?}</div>
+        <div style='font-size:.68rem;color:rgba(255,255,255,.65);'>de {len(df_raw):?} registros</div>
     </div>""", unsafe_allow_html=True)
 
 df = df_raw[m]
 
 # ══════════════════════════════════════════════
-# HEADER + KPIs GENERALES
+# HEADER + PANELES DE KPIs GENERALES
 # ══════════════════════════════════════════════
 st.markdown(f"""
 <div class="ph">
     <div style='font-size:2.4rem;'>🎒</div>
     <div>
-        <h1>Porta · Control de Stock (Cloud DB)</h1>
+        <h1>Porta · Control de Stock (Nube CSV)</h1>
         <p>{m.sum():,} registros &nbsp;·&nbsp;
            {df[C['sucursal']].nunique()} ubicaciones &nbsp;·&nbsp;
            {df[C['item']].nunique():,} SKUs &nbsp;·&nbsp;
@@ -268,7 +272,7 @@ kpi(c5, "SKUs únicos", f"{df[C['item']].nunique():,}", "g")
 st.markdown("<br>", unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════
-# VISTAS (TABS)
+# VISTAS DE PESTAÑAS (TABS)
 # ══════════════════════════════════════════════
 tab1,tab2,tab3,tab4,tab5,tab6 = st.tabs([
     "🔍 Buscar Producto",
