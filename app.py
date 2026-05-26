@@ -4,10 +4,6 @@ import plotly.express as px
 import plotly.graph_objects as go
 import os
 
-# Ruta relativa — el Excel vive en el mismo repositorio de GitHub
-EXCEL_PATH = "PLANTILLA STOCK.xlsx"
-SHEET_NAME = "Report"
-
 R1="#C8102E"; R2="#E8394A"; R3="#FF6B7A"; RD="#8B0000"
 BG="#FDF2F3"; W="#FFFFFF"; G2="#64748b"
 
