@@ -2,11 +2,15 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-import os
+from streamlit_gsheets import GSheetsConnection
+import unicodedata
 
-# Ruta relativa — el Excel vive en el mismo repositorio de GitHub
-EXCEL_PATH = "PLANTILLA STOCK.xlsx"
-SHEET_NAME = "Report"
+# ══════════════════════════════════════════════
+# CONFIGURACIÓN DE LA FUENTE DE DATOS (GOOGLE SHEETS)
+# ══════════════════════════════════════════════
+SPREADSHEET_ID = "1jCAE3PbADPc7gz16UOvlpby5VzpfR3b8gLNy_4ROEe8"
+SHEET_NAME = "Report"  # Asegúrate de que la pestaña se siga llamando así en tu Drive
+GDRIVE_URL = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/edit#gid=0"
 
 R1="#C8102E"; R2="#E8394A"; R3="#FF6B7A"; RD="#8B0000"
 BG="#FDF2F3"; W="#FFFFFF"; G2="#64748b"
@@ -55,47 +59,49 @@ div[data-testid="stDataFrame"]{{border-radius:12px;overflow:hidden;}}
 """, unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════
-# COLUMNAS NUEVAS (todas en mayúsculas)
+# MAPEADO DE COLUMNAS DE TU NUEVA DB EN DRIVE
 # ══════════════════════════════════════════════
 C = {
-    "item":        "ITEM",
-    "desc":        "ITEM_DESCRIPCION",
-    "marca":       "MARCA",
-    "licencia":    "LICENCIA",
-    "linea":       "LINEA",
-    "familia":     "FAMILIA",
-    "subfamilia":  "SUBFAMILIA",
-    "color":       "COLOR",
-    "temporada":   "TEMPORADA",
-    "sucursal":    "SUCURSAL",
-    "canal":       "CANAL_VENTAS",
-    "ubi":         "UBI_RESUMEN",
-    "region":      "REGION",
-    "cluster":     "CLUSTER",
-    "stock":       "STOCKACTUAL",
-    "pvp":         "PVP",
-    "promo":       "PROMO",
-    "campana":     "CAMPANA",
-    "vigencia":    "VIGENCIA",
-    "precio_fin":  "PRECIO_FINAL_C_IGV",
-    "costo":       "COSTO_SIN_IGV",
-    "margen":      "MARGEN_FINAL",
+    "item":         "ITEM",
+    "almacencod":   "ALMACENCODIGO",
+    "stock":        "STOCKACTUAL",
+    "desc":         "ITEM_DESCRIPCION",
+    "marca":        "MARCA",
+    "licencia":     "LICENCIA",
+    "linea":        "LINEA",
+    "familia":      "FAMILIA",
+    "subfamilia":   "SUBFAMILIA",
+    "color":        "COLOR",
+    "temporada":    "TEMPORADA",
+    "sucursal":     "SUCURSAL",
+    "canal":        "CANAL_VENTAS",
+    "ubi":          "UBI_RESUMEN",
+    "ubicacion":    "UBICACION",
+    "region":       "REGION",
+    "cluster":      "CLUSTER",
+    "metraje":      "METRAJE",
+    "pvp":          "PVP",
+    "cod_prom":     "COD_PROM",
+    "promo":        "PROMO",
+    "dsct":         "DSCT",
+    "campana":      "CAMPANA",
+    "vigencia":     "VIGENCIA"
 }
 
-# Tiendas físicas (las que importan para presencia)
 TIENDAS_UBI = ["TIENDAS", "TIENDAS TOGO"]
 ALMA_PRINC  = "ALMA. PRINCIPAL"
 ALMA_ESP    = "ALMA. ESPERA"
 
 # ══════════════════════════════════════════════
-# CARGA
+# CARGA DE DATOS DESDE DRIVE
 # ══════════════════════════════════════════════
 @st.cache_data(show_spinner=False, ttl=600)
 def load_data():
-    df = pd.read_excel(EXCEL_PATH, sheet_name=SHEET_NAME,
-                       dtype=str, engine="openpyxl")
-    # Normalizar columnas: sin espacios, sin tildes, mayúsculas
-    import unicodedata
+    # Conexión nativa con la hoja de cálculo de Google
+    conn = st.connection("gsheets", type=GSheetsConnection)
+    df = conn.read(spreadsheet=GDRIVE_URL, worksheet=SHEET_NAME, dtype=str)
+    
+    # Normalizar títulos de columnas de la hoja por seguridad
     def norm_col(s):
         s = str(s).strip()
         s = unicodedata.normalize("NFD", s)
@@ -103,48 +109,52 @@ def load_data():
         return s.upper().replace(" ","_").replace(".","_").replace("/","_")
     df.columns = [norm_col(c) for c in df.columns]
 
-    # Numéricos
-    for col in [C["stock"], C["pvp"], C["precio_fin"], C["costo"]]:
+    # Convertir las columnas numéricas solicitadas
+    for col in [C["stock"], C["pvp"], C["metraje"], C["dsct"]]:
         if col in df.columns:
             df[col] = pd.to_numeric(
                 df[col].astype(str).str.replace(",",".",regex=False)
                        .str.replace(r"[^\d.\-]","",regex=True),
                 errors="coerce").fillna(0)
 
-    # Texto
-    for col in [C["item"],C["desc"],C["marca"],C["licencia"],C["linea"],
-                C["familia"],C["subfamilia"],C["color"],C["temporada"],
-                C["sucursal"],C["canal"],C["ubi"],C["region"],C["cluster"],
-                C["promo"],C["campana"],C["vigencia"]]:
+    # Limpieza y formateo de texto
+    text_cols = [C["item"], C["almacencod"], C["desc"], C["marca"], C["licencia"], 
+                 C["linea"], C["familia"], C["subfamilia"], C["color"], C["temporada"], 
+                 C["sucursal"], C["canal"], C["ubi"], C["ubicacion"], C["region"], 
+                 C["cluster"], C["cod_prom"], C["promo"], C["campana"], C["vigencia"]]
+                 
+    for col in text_cols:
         if col in df.columns:
             df[col] = df[col].fillna("Sin dato").astype(str).str.strip()
             df.loc[df[col]=="", col] = "Sin dato"
 
+    # Forzar relleno de ceros a la izquierda para los códigos ITEM que se hayan truncado en Drive
+    if C["item"] in df.columns:
+        # Reemplaza valores flotantes tipo '123.0' a '123' si existiesen antes del rellenado
+        df[C["item"]] = df[C["item"]].str.split('.').str[0]
+        # Aplica relleno dinámico (ejemplo estándar para códigos de 6 dígitos)
+        df[C["item"]] = df[C["item"]].apply(lambda x: x.zfill(6) if x != "Sin dato" else x)
+
     df = df[df[C["item"]].notna() & (df[C["item"]] != "Sin dato")].copy()
 
-    # Excluir NO CONSIDERAR en canal de ventas
+    # Excluir "NO CONSIDERAR" en canal de ventas
     if C["canal"] in df.columns:
         df = df[df[C["canal"]] != "NO CONSIDERAR"].copy()
 
-    # Categoricals para O(1)
-    for col in [C["ubi"],C["region"],C["sucursal"],C["linea"],
-                C["familia"],C["marca"],C["temporada"],C["campana"],
-                C["licencia"],C["promo"],C["vigencia"]]:
+    # Optimizaciones de tipo categorizado para filtros veloces
+    cat_cols = [C["ubi"], C["region"], C["sucursal"], C["linea"], C["familia"], 
+                C["marca"], C["temporada"], C["campana"], C["licencia"], C["promo"], C["vigencia"]]
+    for col in cat_cols:
         if col in df.columns:
             df[col] = df[col].astype("category")
 
     return df
 
-if not os.path.exists(EXCEL_PATH):
-    st.error(f"No se encontró el archivo: `{EXCEL_PATH}`")
-    st.info("Asegúrate de que **PLANTILLA STOCK.xlsx** esté en la raíz del repositorio de GitHub.")
-    st.stop()
-
-with st.spinner("Cargando inventario Porta…"):
+with st.spinner("Conectando con Google Drive y cargando inventario Porta…"):
     df_raw = load_data()
 
 # ══════════════════════════════════════════════
-# SIDEBAR
+# SIDEBAR (FILTROS)
 # ══════════════════════════════════════════════
 with st.sidebar:
     st.markdown(f"""
@@ -177,8 +187,8 @@ with st.sidebar:
     filt("Marca",              C["marca"])
     filt("Licencia",           C["licencia"])
     filt("Temporada",          C["temporada"])
-    filt("Campana",            C["campana"])
-    filt("Promo",              C["promo"])      # ← nuevo filtro promo
+    filt("Campaña",            C["campana"])
+    filt("Promo",              C["promo"])
 
     m = _m[0]
     st.markdown("<hr>", unsafe_allow_html=True)
@@ -197,7 +207,7 @@ with st.sidebar:
 df = df_raw[m]
 
 # ══════════════════════════════════════════════
-# HELPERS
+# HELPERS GRÁFICOS
 # ══════════════════════════════════════════════
 PC = dict(paper_bgcolor=W, plot_bgcolor=W,
           margin=dict(l=0,r=0,t=10,b=0),
@@ -223,9 +233,8 @@ def pie_chart(data, names, values, height=300):
     return fig
 
 def tabla_detalle(df_in, cols_extra=None):
-    """Tabla estándar de detalle de productos."""
-    base = [C["item"],C["desc"],C["marca"],C["linea"],C["familia"],
-            C["color"],C["temporada"],C["stock"],C["pvp"]]
+    base = [C["item"], C["desc"], C["marca"], C["linea"], C["familia"],
+            C["color"], C["temporada"], C["stock"], C["pvp"]]
     if cols_extra:
         base += cols_extra
     cols = [c for c in base if c in df_in.columns]
@@ -234,13 +243,13 @@ def tabla_detalle(df_in, cols_extra=None):
     return out
 
 # ══════════════════════════════════════════════
-# HEADER + KPIs
+# HEADER + KPIs GENERALES
 # ══════════════════════════════════════════════
 st.markdown(f"""
 <div class="ph">
     <div style='font-size:2.4rem;'>🎒</div>
     <div>
-        <h1>Porta · Control de Stock</h1>
+        <h1>Porta · Control de Stock (Cloud DB)</h1>
         <p>{m.sum():,} registros &nbsp;·&nbsp;
            {df[C['sucursal']].nunique()} ubicaciones &nbsp;·&nbsp;
            {df[C['item']].nunique():,} SKUs &nbsp;·&nbsp;
@@ -263,7 +272,7 @@ kpi(c5, "SKUs únicos",
 st.markdown("<br>", unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════
-# TABS
+# VISTAS (TABS)
 # ══════════════════════════════════════════════
 tab1,tab2,tab3,tab4,tab5,tab6 = st.tabs([
     "🔍 Buscar Producto",
@@ -274,9 +283,7 @@ tab1,tab2,tab3,tab4,tab5,tab6 = st.tabs([
     "📋 Tabla Completa",
 ])
 
-# ══════════════════════════════════════════════
 # TAB 1 — BUSCAR PRODUCTO
-# ══════════════════════════════════════════════
 with tab1:
     buscar = st.text_input("", placeholder="🔎  Escribe código, nombre, color o marca…",
                            label_visibility="collapsed")
@@ -317,18 +324,9 @@ with tab1:
 
                     r0 = idf.iloc[0]
                     d1,d2,d3,d4,d5 = st.columns(5)
-                    def det(col,lbl,val):
-                        with col:
-                            st.markdown(f"""<div style='background:{BG};border-radius:8px;
-                                padding:10px 12px;text-align:center;'>
-                                <div style='font-size:.65rem;font-weight:700;color:{G2};
-                                text-transform:uppercase;letter-spacing:.4px;'>{lbl}</div>
-                                <div style='font-size:.95rem;font-weight:700;color:#0f172a;
-                                margin-top:3px;'>{val}</div></div>""",
-                                unsafe_allow_html=True)
                     det(d1,"Marca",     r0.get(C["marca"],"—"))
                     det(d2,"Línea",     r0.get(C["linea"],"—"))
-                    det(d3,"Familia",   r0.get(C["familia"],"—"))
+                    det(d3,"Familia",   r0.get(C["family"],"—") if "family" in C else r0.get(C["familia"],"—"))
                     det(d4,"Color",     r0.get(C["color"],"—"))
                     det(d5,"Temporada", r0.get(C["temporada"],"—"))
 
@@ -361,10 +359,8 @@ with tab1:
                             fig.update_layout(**PC, coloraxis_showscale=False)
                             st.plotly_chart(fig, use_container_width=True)
 
-                    # Presencia en tiendas
                     df_ti   = idf[idf[C["ubi"]].isin(TIENDAS_UBI)]
-                    todas_t = sorted(df[df[C["ubi"]].isin(TIENDAS_UBI)]
-                                       [C["sucursal"]].astype(str).unique())
+                    todas_t = sorted(df[df[C["ubi"]].isin(TIENDAS_UBI)][C["sucursal"]].astype(str).unique())
                     con_s   = sorted(df_ti[df_ti[C["stock"]]>0][C["sucursal"]].astype(str).unique())
                     sin_s   = [t for t in todas_t if t not in con_s]
                     cob     = int(len(con_s)/len(todas_t)*100) if todas_t else 0
@@ -391,14 +387,10 @@ with tab1:
                         </div>
                     </div>""", unsafe_allow_html=True)
 
-# ══════════════════════════════════════════════
 # TAB 2 — VISTA POR TIENDA
-# ══════════════════════════════════════════════
 with tab2:
     tiendas_disp = sorted(df[C["sucursal"]].astype(str).unique())
-    sel_t = st.selectbox("Tienda", tiendas_disp,
-                         label_visibility="collapsed",
-                         placeholder="Selecciona una tienda…")
+    sel_t = st.selectbox("Tienda", tiendas_disp, label_visibility="collapsed", placeholder="Selecciona una tienda…")
     if sel_t:
         dt = df[df[C["sucursal"]].astype(str)==sel_t]
         ta,tb2,tc2,td2 = st.columns(4)
@@ -416,26 +408,18 @@ with tab2:
             bf = (dt.groupby(C["familia"])[C["stock"]].sum().reset_index()
                     .query(f"{C['stock']} > 0")
                     .sort_values(C["stock"], ascending=True))
-            st.plotly_chart(bar_h(bf, C["familia"], C["stock"],
-                            [[0,"#fecdd3"],[1,R1]], max(280,len(bf)*34)),
-                            use_container_width=True)
+            st.plotly_chart(bar_h(bf, C["familia"], C["stock"], [[0,"#fecdd3"],[1,R1]], max(280,len(bf)*34)), use_container_width=True)
         with cb3:
             st.markdown("**Por Línea**")
-            bl = (dt.groupby(C["linea"])[C["stock"]].sum().reset_index()
-                    .sort_values(C["stock"], ascending=False))
+            bl = (dt.groupby(C["linea"])[C["stock"]].sum().reset_index() .sort_values(C["stock"], ascending=False))
             st.plotly_chart(pie_chart(bl, C["linea"], C["stock"]), use_container_width=True)
 
         st.markdown("**Productos con stock**")
         dt2 = tabla_detalle(dt[dt[C["stock"]]>0])
         st.dataframe(dt2, use_container_width=True, height=400, hide_index=True)
-        st.download_button("⬇️ Exportar",
-                           dt2.to_csv(index=False).encode("utf-8-sig"),
-                           f"porta_{sel_t}.csv", "text/csv")
+        st.download_button("⬇️ Exportar Tienda", dt2.to_csv(index=False).encode("utf-8-sig"), f"porta_{sel_t}.csv", "text/csv")
 
-# ══════════════════════════════════════════════
 # TAB 3 — ALMACÉN PRINCIPAL
-# Solo familias con stock > 0
-# ══════════════════════════════════════════════
 with tab3:
     dap = df[df[C["ubi"]]==ALMA_PRINC]
     st.markdown("#### Almacén Principal")
@@ -449,94 +433,64 @@ with tab3:
         kpi(a3,"Familias",     f"{dap[dap[C['stock']]>0][C['familia']].nunique()}")
         st.markdown("<br>", unsafe_allow_html=True)
 
-        # Solo familias CON stock > 0
-        fam_stock = (dap.groupby(C["familia"])[C["stock"]].sum().reset_index()
-                        .query(f"{C['stock']} > 0")
-                        .sort_values(C["stock"], ascending=True))
+        fam_stock = (dap.groupby(C["familia"])[C["stock"]].sum().reset_index().query(f"{C['stock']} > 0").sort_values(C["stock"], ascending=True))
 
         ca3,cb4 = st.columns(2)
         with ca3:
             st.markdown("**Familias con stock**")
             if not fam_stock.empty:
-                st.plotly_chart(bar_h(fam_stock, C["familia"], C["stock"],
-                                [[0,"#fecdd3"],[1,RD]],
-                                max(280, len(fam_stock)*34)),
-                                use_container_width=True)
+                st.plotly_chart(bar_h(fam_stock, C["familia"], C["stock"], [[0,"#fecdd3"],[1,RD]], max(280, len(fam_stock)*34)), use_container_width=True)
         with cb4:
             st.markdown("**Por Línea**")
-            al = (dap[dap[C["stock"]]>0].groupby(C["linea"])[C["stock"]].sum()
-                     .reset_index().sort_values(C["stock"], ascending=False))
+            al = (dap[dap[C["stock"]]>0].groupby(C["linea"])[C["stock"]].sum().reset_index().sort_values(C["stock"], ascending=False))
             if not al.empty:
                 st.plotly_chart(pie_chart(al, C["linea"], C["stock"]), use_container_width=True)
 
         st.markdown("**Detalle**")
         dap2 = tabla_detalle(dap[dap[C["stock"]]>0])
         st.dataframe(dap2, use_container_width=True, height=420, hide_index=True)
-        st.download_button("⬇️ Exportar",
-                           dap2.to_csv(index=False).encode("utf-8-sig"),
-                           "porta_alma_principal.csv","text/csv")
+        st.download_button("⬇️ Exportar Almacén", dap2.to_csv(index=False).encode("utf-8-sig"), "porta_alma_principal.csv","text/csv")
 
-# ══════════════════════════════════════════════
-# TAB 4 — PROMOS (estilo Vista por Tienda)
-# ══════════════════════════════════════════════
+# TAB 4 — PROMOS
 with tab4:
     st.markdown("#### Detalle por Promoción")
 
     promos_disp = sorted(df[df[C["promo"]]!="SIN DSCT"][C["promo"]].unique().tolist())
-    sel_promo   = st.selectbox("Selecciona una promo", promos_disp,
-                               label_visibility="collapsed",
-                               placeholder="Selecciona una promoción…")
+    sel_promo   = st.selectbox("Selecciona una promo", promos_disp, label_visibility="collapsed", placeholder="Selecciona una promoción…")
     if sel_promo:
         dp = df[df[C["promo"]]==sel_promo]
 
-        # Solo KPIs de stock
         p1,p2,p3 = st.columns(3)
         kpi(p1,"Stock total",   f"{int(dp[C['stock']].sum()):,}")
         kpi(p2,"SKUs en promo", f"{dp[C['item']].nunique():,}", "d")
-        kpi(p3,"Unidades s/stock",
-            f"{int((dp.groupby(C['item'])[C['stock']].sum()==0).sum()):,}", "s")
+        kpi(p3,"Unidades s/stock", f"{int((dp.groupby(C['item'])[C['stock']].sum()==0).sum()):,}", "s")
 
         st.markdown("<br>", unsafe_allow_html=True)
 
-        # Solo tabla de ítems de la promo
         st.markdown("**Ítems incluidos en la promo**")
-        dp2 = tabla_detalle(dp)
+        dp2 = tabla_detalle(dp, cols_extra=[C["cod_prom"], C["dsct"]])
         st.dataframe(dp2, use_container_width=True, height=500, hide_index=True)
-        st.download_button("⬇️ Exportar promo",
-                           dp2.to_csv(index=False).encode("utf-8-sig"),
-                           f"porta_promo.csv","text/csv")
+        st.download_button("⬇️ Exportar promo", dp2.to_csv(index=False).encode("utf-8-sig"), f"porta_promo.csv","text/csv")
 
-# ══════════════════════════════════════════════
 # TAB 5 — TEMPORADA
-# ══════════════════════════════════════════════
 with tab5:
     st.markdown("#### Stock por Temporada")
 
     ca5,cb5 = st.columns([2,1])
     with ca5:
-        bt = (df.groupby(C["temporada"])[C["stock"]].sum().reset_index()
-                .sort_values(C["stock"], ascending=False).head(16))
-        fig_t = px.bar(bt, x=C["temporada"], y=C["stock"],
-                       color=C["stock"],
-                       color_continuous_scale=[[0,"#fecdd3"],[1,R1]],
-                       height=340, template="plotly_white",
-                       labels={C["stock"]:"Unidades", C["temporada"]:""})
+        bt = (df.groupby(C["temporada"])[C["stock"]].sum().reset_index().sort_values(C["stock"], ascending=False).head(16))
+        fig_t = px.bar(bt, x=C["temporada"], y=C["stock"], color=C["stock"], color_continuous_scale=[[0,"#fecdd3"],[1,R1]], height=340, template="plotly_white", labels={C["stock"]:"Unidades", C["temporada"]:""})
         fig_t.update_layout(**PC, coloraxis_showscale=False, xaxis_tickangle=-35)
         st.plotly_chart(fig_t, use_container_width=True)
 
     with cb5:
-        bc = (df.groupby(C["campana"])[C["stock"]].sum().reset_index()
-                .sort_values(C["stock"], ascending=False))
-        st.plotly_chart(pie_chart(bc, C["campana"], C["stock"], height=340),
-                        use_container_width=True)
+        bc = (df.groupby(C["campana"])[C["stock"]].sum().reset_index().sort_values(C["stock"], ascending=False))
+        st.plotly_chart(pie_chart(bc, C["campana"], C["stock"], height=340), use_container_width=True)
 
-    # Selector de temporada para ver detalle
     st.markdown("---")
     st.markdown("#### Detalle por Temporada")
     temps_disp = sorted(df[C["temporada"]].unique().tolist())
-    sel_temp   = st.selectbox("Selecciona temporada", temps_disp,
-                              label_visibility="collapsed",
-                              placeholder="Selecciona una temporada…")
+    sel_temp   = st.selectbox("Selecciona temporada", temps_disp, label_visibility="collapsed", placeholder="Selecciona una temporada…")
     if sel_temp:
         dtemp = df[df[C["temporada"]]==sel_temp]
         t1,t2,t3 = st.columns(3)
@@ -547,38 +501,34 @@ with tab5:
 
         cta,ctb = st.columns([2,1])
         with cta:
-            bf_t = (dtemp.groupby(C["familia"])[C["stock"]].sum().reset_index()
-                         .query(f"{C['stock']} > 0")
-                         .sort_values(C["stock"], ascending=True))
+            bf_t = (dtemp.groupby(C["familia"])[C["stock"]].sum().reset_index().query(f"{C['stock']} > 0").sort_values(C["stock"], ascending=True))
             if not bf_t.empty:
-                st.plotly_chart(bar_h(bf_t, C["familia"], C["stock"],
-                                [[0,"#fecdd3"],[1,R1]], max(280,len(bf_t)*34)),
-                                use_container_width=True)
+                st.plotly_chart(bar_h(bf_t, C["familia"], C["stock"], [[0,"#fecdd3"],[1,R1]], max(280,len(bf_t)*34)), use_container_width=True)
         with ctb:
-            bl_t = (dtemp.groupby(C["linea"])[C["stock"]].sum().reset_index()
-                         .sort_values(C["stock"], ascending=False))
+            bl_t = (dtemp.groupby(C["linea"])[C["stock"]].sum().reset_index().sort_values(C["stock"], ascending=False))
             if not bl_t.empty:
-                st.plotly_chart(pie_chart(bl_t, C["linea"], C["stock"]),
-                                use_container_width=True)
+                st.plotly_chart(pie_chart(bl_t, C["linea"], C["stock"]), use_container_width=True)
 
         dtemp2 = tabla_detalle(dtemp[dtemp[C["stock"]]>0])
         st.dataframe(dtemp2, use_container_width=True, height=380, hide_index=True)
-        st.download_button("⬇️ Exportar temporada",
-                           dtemp2.to_csv(index=False).encode("utf-8-sig"),
-                           f"porta_temp.csv","text/csv")
+        st.download_button("⬇️ Exportar temporada", dtemp2.to_csv(index=False).encode("utf-8-sig"), f"porta_temp.csv","text/csv")
 
-# ══════════════════════════════════════════════
 # TAB 6 — TABLA COMPLETA
-# ══════════════════════════════════════════════
 with tab6:
-    show = [c for c in [C["item"],C["desc"],C["marca"],C["licencia"],C["linea"],
-                         C["familia"],C["subfamilia"],C["color"],C["temporada"],
-                         C["sucursal"],C["ubi"],C["region"],C["cluster"],
-                         C["stock"],C["pvp"],C["promo"],C["campana"],C["vigencia"]]
-            if c in df.columns]
+    show = [c for c in C.values() if c in df.columns]
     ds = df[show].sort_values(C["stock"], ascending=False).copy()
     ds[C["stock"]] = ds[C["stock"]].astype(int)
     st.dataframe(ds, use_container_width=True, height=560, hide_index=True)
-    st.download_button("⬇️ Exportar todo",
-                       ds.to_csv(index=False).encode("utf-8-sig"),
-                       "porta_stock.csv","text/csv")
+    st.download_button("⬇️ Exportar todo", ds.to_csv(index=False).encode("utf-8-sig"), "porta_stock.csv","text/csv")
+
+
+# Función auxiliar para la sección de desglose de ítem en TAB 1
+def det(col, lbl, val):
+    with col:
+        st.markdown(f"""<div style='background:{BG};border-radius:8px;
+            padding:10px 12px;text-align:center;'>
+            <div style='font-size:.65rem;font-weight:700;color:{G2};
+            text-transform:uppercase;letter-spacing:.4px;'>{lbl}</div>
+            <div style='font-size:.95rem;font-weight:700;color:#0f172a;
+            margin-top:3px;'>{val}</div></div>""",
+            unsafe_allow_html=True)
