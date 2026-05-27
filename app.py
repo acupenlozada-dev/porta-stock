@@ -409,30 +409,26 @@ with tab2:
     )
     
     if sel_t:
-        # Segmentamos los datos de la tienda seleccionada
         dt = df_solo_tiendas[df_solo_tiendas[C["sucursal"]].astype(str) == sel_t]
         
         # 3. LÓGICA DE GESTIÓN DE STOCK OBSOLETO
-        # Evaluamos filas que NO pertenezcan a las temporadas vigentes
         mask_obsoleto = ~dt[C["temporada"]].isin(TEMPORADAS_VIGENTES)
         
         stock_total = int(dt[C["stock"]].sum())
         skus_unicos = dt[C["item"]].nunique()
         stock_obsoleto = int(dt[mask_obsoleto][C["stock"]].sum())
-        
-        # Calcular ratio de obsolescencia resguardando división por cero
         porcentaje_obsoleto = (stock_obsoleto / stock_total * 100) if stock_total > 0 else 0
         
-        # 4. RENDERIZADO DE LAS NUEVAS KPI CARDS
+        # 4. RENDERIZADO DE KPI CARDS
         ta, tb2, tc2, td2 = st.columns(4)
         kpi(ta,  "Stock Total",       f"{stock_total:,}")
         kpi(tb2, "SKUs Únicos",       f"{skus_unicos:,}", "d")
-        kpi(tc2, "Stock Obsoleto",     f"{stock_obsoleto:,}", "o")  # Color naranja de advertencia
+        kpi(tc2, "Stock Obsoleto",     f"{stock_obsoleto:,}", "o")
         kpi(td2, "% Obsolescencia",    f"{porcentaje_obsoleto:.1f}%", "s" if porcentaje_obsoleto < 30 else "d")
         
         st.markdown("<br>", unsafe_allow_html=True)
 
-        # 5. GRÁFICOS VISUALES DE LA TIENDA
+        # 5. GRÁFICOS VISUALES
         ca2, cb3 = st.columns([2, 1])
         with ca2:
             st.markdown("**Por Familia**")
@@ -443,22 +439,36 @@ with tab2:
             bl = (dt.groupby(C["linea"])[C["stock"]].sum().reset_index().sort_values(C["stock"], ascending=False))
             st.plotly_chart(pie_chart(bl, C["linea"], C["stock"]), use_container_width=True)
 
-        # 6. TABLA DE DETALLE ENRIQUECIDA CON PROMOS Y ESTILOS
+        # 6. TABLA DE DETALLE CON AGRUPACIÓN CONTROLADA (EVITA REPETIDOS)
         st.markdown("**Productos con stock en tienda**")
         
-        # Extraemos las columnas solicitadas
-        dt2 = tabla_detalle(dt[dt[C["stock"]] > 0], cols_extra=[C["promo"], C["dsct"]])
+        # Filtramos solo registros con stock > 0 en esta tienda
+        dt_con_stock = dt[dt[C["stock"]] > 0]
         
-        # Renombramos temporalmente para una lectura limpia en interfaz si se desea, 
-        # o aplicamos formateo visual directo con el Styler de Pandas
-        df_styled = dt2.style.format({
-            C["dsct"]: "{:.0f}%"  # Agrega el símbolo % visualmente al número de descuento
+        # Agrupamos estrictamente por ITEM para consolidar filas repetidas y evitar distorsión de DSCT
+        dt_agrupado = dt_con_stock.groupby([
+            C["item"], C["desc"], C["marca"], C["linea"], C["familia"], 
+            C["color"], C["temporada"], C["promo"]
+        ]).agg({
+            C["stock"]: "sum",
+            C["pvp"]: "first",  # Trae el primer PVP encontrado para ese SKU
+            C["dsct"]: "first"  # Trae el primer descuento asignado a la promo de ese SKU
+        }).reset_index()
+        
+        # Ordenamos por volumen de stock
+        dt_agrupado = dt_agrupado.sort_values(C["stock"], ascending=False)
+        dt_agrupado[C["stock"]] = dt_agrupado[C["stock"]].astype(int)
+        
+        # Aplicamos el formateo estricto a las columnas numéricas en pantalla
+        df_styled = dt_agrupado.style.format({
+            C["dsct"]: "{:.0f}%",  # Muestra el descuento como porcentaje sin decimales (Ej: 20%)
+            C["pvp"]: "{:.2f}"     # Fuerza al PVP a mostrar exactamente 2 decimales (Ej: 149.90)
         })
         
         st.dataframe(df_styled, use_container_width=True, height=400, hide_index=True)
         
-        # Botón de descarga de los datos limpios de la sucursal
-        st.download_button("⬇️ Exportar Tienda", dt2.to_csv(index=False).encode("utf-8-sig"), f"porta_{sel_t}.csv", "text/csv")
+        # El botón de descarga conserva los datos puros consolidados
+        st.download_button("⬇️ Exportar Tienda", dt_agrupado.to_csv(index=False).encode("utf-8-sig"), f"porta_{sel_t}.csv", "text/csv")
 
 # TAB 3 — ALMACÉN PRINCIPAL
 with tab3:
@@ -492,27 +502,45 @@ with tab3:
         st.dataframe(dap2, use_container_width=True, height=420, hide_index=True)
         st.download_button("⬇️ Exportar Almacén", dap2.to_csv(index=False).encode("utf-8-sig"), "porta_alma_principal.csv","text/csv")
 
-# TAB 4 — PROMOS
+# ==============================================================================
+# TAB 4 — PROMOS (CORREGIDA Y FORMATEADA)
+# ==============================================================================
 with tab4:
     st.markdown("#### Detalle por Promoción")
 
-    promos_disp = sorted(df[df[C["promo"]]!="SIN DSCT"][C["promo"]].unique().tolist())
-    sel_promo   = st.selectbox("Selecciona una promo", promos_disp, key="sel_promo_tab4", label_visibility="collapsed", placeholder="Selecciona una promoción…")
+    promos_disp = sorted(df[df[C["promo"]] != "SIN DSCT"][C["promo"]].unique().tolist())
+    sel_promo = st.selectbox(
+        "Selecciona una promo", 
+        promos_disp, 
+        key="sel_promo_tab4", 
+        label_visibility="collapsed", 
+        placeholder="Selecciona una promoción…"
+    )
+    
     if sel_promo:
-        dp = df[df[C["promo"]]==sel_promo]
+        dp = df[df[C["promo"]] == sel_promo]
 
-        p1,p2,p3 = st.columns(3)
-        kpi(p1,"Stock total",   f"{int(dp[C['stock']].sum()):,}")
-        kpi(p2,"SKUs en promo", f"{dp[C['item']].nunique():,}", "d")
-        kpi(p3,"Unidades s/stock", f"{int((dp.groupby(C['item'])[C['stock']].sum()==0).sum()):,}", "s")
+        p1, p2, p3 = st.columns(3)
+        kpi(p1, "Stock total",      f"{int(dp[C['stock']].sum()):,}")
+        kpi(p2, "SKUs en promo",    f"{dp[C['item']].nunique():,}", "d")
+        kpi(p3, "Unidades s/stock", f"{int((dp.groupby(C['item'])[C['stock']].sum() == 0).sum()):,}", "s")
 
         st.markdown("<br>", unsafe_allow_html=True)
 
         st.markdown("**Ítems incluidos en la promo**")
+        
+        # Traemos la tabla de detalles base incluyendo las columnas de promoción
         dp2 = tabla_detalle(dp, cols_extra=[C["cod_prom"], C["dsct"]])
-        st.dataframe(dp2, use_container_width=True, height=500, hide_index=True)
-        st.download_button("⬇️ Exportar promo", dp2.to_csv(index=False).encode("utf-8-sig"), f"porta_promo.csv","text/csv")
-
+        
+        # Aplicamos el formateo visual para homogeneizar la interfaz
+        dp2_styled = dp2.style.format({
+            C["dsct"]: "{:.0f}%",  # Transforma el formato numérico de descuento a visual %
+            C["pvp"]: "{:.2f}"     # Elimina los 6 ceros flotantes y lo deja con 2 decimales limpios
+        })
+        
+        st.dataframe(dp2_styled, use_container_width=True, height=500, hide_index=True)
+        st.download_button("⬇️ Exportar promo", dp2.to_csv(index=False).encode("utf-8-sig"), f"porta_promo.csv", "text/csv")
+      
 # TAB 5 — TEMPORADA
 with tab5:
     st.markdown("#### Stock por Temporada")
