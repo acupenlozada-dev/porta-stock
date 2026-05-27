@@ -160,7 +160,6 @@ def bar_h(data, y, x, cs, height=320, key=None):
                  color_continuous_scale=cs, height=height,
                  template="plotly_white", labels={x:"Unidades", y:""})
     fig.update_layout(**PC, coloraxis_showscale=False)
-    # Agregamos meta-id en el layout para asegurar unicidad ante Plotly/Streamlit
     if key:
         fig.update_layout(meta=key)
     return fig
@@ -193,7 +192,7 @@ def det(col, lbl, val):
             unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════
-# SIDEBAR (FILTROS INTERACTIVOS)
+# SIDEBAR (FILTROS INTERACTIVOS SINCRONIZADOS)
 # ══════════════════════════════════════════════
 with st.sidebar:
     st.markdown(f"""
@@ -205,56 +204,76 @@ with st.sidebar:
 
     if st.button("🔄 Actualizar datos", use_container_width=True):
         st.cache_data.clear()
+        # Limpiamos también el estado de filtros para un reseteo total y limpio
+        for k in list(st.session_state.keys()):
+            del st.session_state[k]
         st.rerun()
 
     st.markdown("<div style='margin-top:10px'></div>", unsafe_allow_html=True)
 
-    # Inicialización de la máscara acumulativa
-    m = pd.Series(True, index=df_raw.index)
+    # Definición de las dimensiones clave mapeadas para la automatización del bucle
+    FILTROS_CONFIG = [
+        {"label": "Ubicación / Canal", "col": C["ubi"], "key": "sf_ubi"},
+        {"label": "Región",             "col": C["region"], "key": "sf_region"},
+        {"label": "Sucursal / Tienda",  "col": C["sucursal"], "key": "sf_sucursal"},
+        {"label": "Línea",              "col": C["linea"], "key": "sf_linea"},
+        {"label": "Familia",            "col": C["familia"], "key": "sf_familia"},
+        {"label": "Marca",              "col": C["marca"], "key": "sf_marca"},
+        {"label": "Licencia",           "col": C["licencia"], "key": "sf_licencia"},
+        {"label": "Temporada",          "col": C["temporada"], "key": "sf_temporada"},
+        {"label": "Campaña",            "col": C["campana"], "key": "sf_campana"},
+        {"label": "Promo",              "col": C["promo"], "key": "sf_promo"},
+    ]
 
-    # Función interna para procesar filtros en cascada real sin perder selecciones
-    def aplicar_filtro_sidebar(label, col_name, current_mask):
-        # Las opciones disponibles dependen de lo filtrado previamente por los selectores superiores
-        opciones_disponibles = sorted(df_raw.loc[current_mask, col_name].dropna().unique().tolist())
+    # Inicializamos las variables de control en session_state si no existen
+    for f in FILTROS_CONFIG:
+        if f["key"] not in st.session_state:
+            st.session_state[f["key"]] = []
+
+    # Construcción dinámica de las opciones respetando la exclusión de su propio filtro (Cross-Filtering)
+    for i, f in enumerate(FILTROS_CONFIG):
+        if i == 3:  # Separador visual entre estructura comercial y atributos de producto
+            st.markdown("<hr>", unsafe_allow_html=True)
+            
+        # Calculamos la máscara combinando todos los filtros ACTIVOS excepto el actual
+        sub_mask = pd.Series(True, index=df_raw.index)
+        for f_other in FILTROS_CONFIG:
+            if f_other["key"] != f["key"] and st.session_state[f_other["key"]]:
+                sub_mask &= df_raw[f_other["col"]].isin(st.session_state[f_other["key"]])
         
-        # Si la opción previa seleccionada ya no existe en el subconjunto, multiselect la maneja nativamente
-        seleccion = st.multiselect(label, opciones_disponibles, placeholder="Todas")
+        # Extraemos las opciones válidas basadas en la exclusión cruzada
+        opciones = sorted(df_raw.loc[sub_mask, f["col"]].dropna().unique().tolist())
         
-        if seleccion:
-            return current_mask & df_raw[col_name].isin(seleccion)
-        return current_mask
-
-    # Grupo 1: Filtros de Red/Estructura Comercial
-    m = aplicar_filtro_sidebar("Ubicación / Canal",  C["ubi"], m)
-    m = aplicar_filtro_sidebar("Región",             C["region"], m)
-    m = aplicar_filtro_sidebar("Sucursal / Tienda",  C["sucursal"], m)
-    
-    st.markdown("<hr>", unsafe_allow_html=True)
-    
-    # Grupo 2: Filtros de Atributos de Producto
-    m = aplicar_filtro_sidebar("Línea",              C["linea"], m)
-    m = aplicar_filtro_sidebar("Familia",            C["familia"], m)
-    m = aplicar_filtro_sidebar("Marca",              C["marca"], m)
-    m = aplicar_filtro_sidebar("Licencia",           C["licencia"], m)
-    m = aplicar_filtro_sidebar("Temporada",          C["temporada"], m)
-    m = aplicar_filtro_sidebar("Campaña",            C["campana"], m)
-    m = aplicar_filtro_sidebar("Promo",              C["promo"], m)
+        # El widget lee y escribe directamente en el session_state de forma síncrona
+        st.multiselect(
+            label=f["label"],
+            options=opciones,
+            key=f["key"],
+            placeholder="Todas"
+        )
 
     st.markdown("<hr>", unsafe_allow_html=True)
 
-    solo_stock = st.checkbox("Solo con stock > 0")
+    solo_stock = st.checkbox("Solo con stock > 0", key="sf_solo_stock")
+
+    # Construcción de la máscara final global para filtrar todo el set de datos
+    m_global = pd.Series(True, index=df_raw.index)
+    for f in FILTROS_CONFIG:
+        if st.session_state[f["key"]]:
+            m_global &= df_raw[f["col"]].isin(st.session_state[f["key"]])
+            
     if solo_stock:
-        m = m & (df_raw[C["stock"]] > 0)
+        m_global &= (df_raw[C["stock"]] > 0)
 
     st.markdown(f"""
     <div style='text-align:center;margin-top:10px;background:rgba(255,255,255,.14);
                 border-radius:10px;padding:10px 8px;'>
-        <div style='font-size:1.4rem;font-weight:800;color:white;'>{m.sum():,}</div>
+        <div style='font-size:1.4rem;font-weight:800;color:white;'>{m_global.sum():,}</div>
         <div style='font-size:.68rem;color:rgba(255,255,255,.65);'>de {len(df_raw):,} registros</div>
     </div>""", unsafe_allow_html=True)
 
-# Dataset global filtrado
-df = df_raw[m]
+# Asignación del DataFrame global filtrado
+df = df_raw[m_global]
 
 # ══════════════════════════════════════════════
 # HEADER + PANELES DE KPIs GENERALES
@@ -264,7 +283,7 @@ st.markdown(f"""
     <div style='font-size:2.4rem;'>🎒</div>
     <div>
         <h1>Porta · Control de Stock (Cloud Secure DB)</h1>
-        <p>{m.sum():,} registros &nbsp;·&nbsp;
+        <p>{m_global.sum():,} registros &nbsp;·&nbsp;
            {df[C['sucursal']].nunique()} ubicaciones &nbsp;·&nbsp;
            {df[C['item']].nunique():,} SKUs &nbsp;·&nbsp;
            {int(df[C['stock']].sum()):,} unidades</p>
@@ -388,14 +407,12 @@ with tab1:
                         </div>
                     </div>""", unsafe_allow_html=True)
 
-# ==============================================================================
-# TAB 2 — VISTA POR TIENDA (RESTAURADA + ARTIFICIO DSCT)
-# ==============================================================================
+# ══════════════════════════════════════════════
+# TAB 2 — VISTA POR TIENDA
+# ══════════════════════════════════════════════
 with tab2:
-    # 1. PARAMETRIZACIÓN DE TEMPORADAS
     TEMPORADAS_VIGENTES = ["TEM - 2026 (3)", "TEM - 2026 (2)", "TEM - 2026 (1)", "TEM - 2025 (4)"]
 
-    # 2. FILTRAR SUCURSALES: Solo Tiendas o Tiendas ToGo
     df_solo_tiendas = df[df[C["ubi"]].isin(TIENDAS_UBI)]
     tiendas_disp = sorted(df_solo_tiendas[C["sucursal"]].astype(str).unique())
     
@@ -410,7 +427,6 @@ with tab2:
     if sel_t:
         dt = df_solo_tiendas[df_solo_tiendas[C["sucursal"]].astype(str) == sel_t]
         
-        # 3. LÓGICA DE GESTIÓN DE STOCK OBSOLETO
         mask_obsoleto = ~dt[C["temporada"]].isin(TEMPORADAS_VIGENTES)
         
         stock_total = int(dt[C["stock"]].sum())
@@ -418,7 +434,6 @@ with tab2:
         stock_obsoleto = int(dt[mask_obsoleto][C["stock"]].sum())
         porcentaje_obsoleto = (stock_obsoleto / stock_total * 100) if stock_total > 0 else 0
         
-        # 4. RENDERIZADO DE KPI CARDS
         ta, tb2, tc2, td2 = st.columns(4)
         kpi(ta,  "Stock Total",       f"{stock_total:,}")
         kpi(tb2, "SKUs Únicos",       f"{skus_unicos:,}", "d")
@@ -427,7 +442,6 @@ with tab2:
         
         st.markdown("<br>", unsafe_allow_html=True)
 
-        # 5. GRÁFICOS VISUALES
         ca2, cb3 = st.columns([2, 1])
         with ca2:
             st.markdown("**Por Familia**")
@@ -438,12 +452,10 @@ with tab2:
             bl = (dt.groupby(C["linea"])[C["stock"]].sum().reset_index().sort_values(C["stock"], ascending=False))
             st.plotly_chart(pie_chart(bl, C["linea"], C["stock"]), use_container_width=True)
 
-        # 6. TABLA DE DETALLE (Original Fila por Fila + Formato de Descuento x100)
         st.markdown("**Productos con stock en tienda**")
         
         dt2 = tabla_detalle(dt[dt[C["stock"]] > 0], cols_extra=[C["promo"], C["dsct"]])
         
-        # Artificio (* 100): Si el valor es 0.20, se multiplica por 100 y se muestra como 20%
         df_styled = dt2.style.format({
             C["dsct"]: lambda x: f"{int(round(float(x) * 100))}%" if pd.notnull(x) and float(x) != 0 else "0%",
             C["pvp"]: "{:.2f}"
@@ -484,9 +496,7 @@ with tab3:
         st.dataframe(dap2, use_container_width=True, height=420, hide_index=True)
         st.download_button("⬇️ Exportar Almacén", dap2.to_csv(index=False).encode("utf-8-sig"), "porta_alma_principal.csv","text/csv")
 
-# ==============================================================================
-# TAB 4 — PROMOS (RESTAURADA + ARTIFICIO DSCT)
-# ==============================================================================
+# TAB 4 — PROMOS
 with tab4:
     st.markdown("#### Detalle por Promoción")
 
@@ -513,7 +523,6 @@ with tab4:
         
         dp2 = tabla_detalle(dp, cols_extra=[C["cod_prom"], C["dsct"]])
         
-        # Aplicamos la misma lógica con round() para evitar imprecisiones de coma flotante
         dp2_styled = dp2.style.format({
             C["dsct"]: lambda x: f"{int(round(float(x) * 100))}%" if pd.notnull(x) and float(x) != 0 else "0%",
             C["pvp"]: "{:.2f}"
@@ -553,9 +562,8 @@ with tab5:
         with cta:
             bf_t = (dtemp.groupby(C["familia"])[C["stock"]].sum().reset_index().query(f"{C['stock']} > 0").sort_values(C["stock"], ascending=True))
             if not bf_t.empty:
-                # Se añade una clave explícita para diferenciarlo completamente del gráfico de la Tab 2
                 st.plotly_chart(bar_h(bf_t, C["familia"], C["stock"], [[0,"#fecdd3"],[1,R1]], max(280,len(bf_t)*34), key="graph_bar_tab5"), use_container_width=True)
-        with ctb:
+        with cb3:
             bl_t = (dtemp.groupby(C["linea"])[C["stock"]].sum().reset_index().sort_values(C["stock"], ascending=False))
             if not bl_t.empty:
                 st.plotly_chart(pie_chart(bl_t, C["linea"], C["stock"]), use_container_width=True)
