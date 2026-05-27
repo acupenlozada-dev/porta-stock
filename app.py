@@ -8,7 +8,6 @@ import unicodedata
 # ══════════════════════════════════════════════
 # CONFIGURACIÓN DE LA FUENTE DE DATOS
 # ══════════════════════════════════════════════
-# URL de edición estándar de tu Sheet privado compartida con la cuenta de servicio
 GDRIVE_URL = "https://docs.google.com/spreadsheets/d/1jCAE3PbADPc7gz16UOvlpby5VzpfR3b8gLNy_4ROEe8/edit#gid=0"
 SHEET_NAME = "Report"
 
@@ -59,7 +58,7 @@ div[data-testid="stDataFrame"]{{border-radius:12px;overflow:hidden;}}
 """, unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════
-# MAPEADO DE COLUMNAS DE TU NUEVA DB EN DRIVE
+# MAPEADO DE COLUMNAS
 # ══════════════════════════════════════════════
 C = {
     "item":         "ITEM",
@@ -93,11 +92,10 @@ ALMA_PRINC  = "ALMA. PRINCIPAL"
 ALMA_ESP    = "ALMA. ESPERA"
 
 # ══════════════════════════════════════════════
-# CARGA DE DATOS USANDO CREDENCIALES EXCLUSIVAS
+# CARGA DE DATOS
 # ══════════════════════════════════════════════
 @st.cache_data(show_spinner=False, ttl=600)
 def load_data():
-    # Establece la conexión utilizando el bloque [connections.gsheets] de los Secrets
     conn = st.connection("gsheets", type=GSheetsConnection)
     df = conn.read(spreadsheet=GDRIVE_URL, worksheet=SHEET_NAME, dtype=str)
     
@@ -157,11 +155,14 @@ def kpi(col, lbl, val, cls=""):
         st.markdown(f'<div class="kpi {cls}"><p class="kpi-l">{lbl}</p>'
                     f'<p class="kpi-v">{val}</p></div>', unsafe_allow_html=True)
 
-def bar_h(data, y, x, cs, height=320):
+def bar_h(data, y, x, cs, height=320, key=None):
     fig = px.bar(data, y=y, x=x, orientation="h", color=x,
                  color_continuous_scale=cs, height=height,
                  template="plotly_white", labels={x:"Unidades", y:""})
     fig.update_layout(**PC, coloraxis_showscale=False)
+    # Agregamos meta-id en el layout para asegurar unicidad ante Plotly/Streamlit
+    if key:
+        fig.update_layout(meta=key)
     return fig
 
 def pie_chart(data, names, values, height=300):
@@ -192,7 +193,7 @@ def det(col, lbl, val):
             unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════
-# SIDEBAR (FILTROS)
+# SIDEBAR (FILTROS INTERACTIVOS)
 # ══════════════════════════════════════════════
 with st.sidebar:
     st.markdown(f"""
@@ -208,27 +209,37 @@ with st.sidebar:
 
     st.markdown("<div style='margin-top:10px'></div>", unsafe_allow_html=True)
 
-    _m = [pd.Series(True, index=df_raw.index)]
+    # Inicialización de la máscara acumulativa
+    m = pd.Series(True, index=df_raw.index)
 
-    def filt(label, col):
-        opts = sorted(df_raw.loc[_m[0], col].unique().tolist())
-        sel  = st.multiselect(label, opts, placeholder="Todas")
-        if sel:
-            _m[0] = _m[0] & df_raw[col].isin(sel)
+    # Función interna para procesar filtros en cascada real sin perder selecciones
+    def aplicar_filtro_sidebar(label, col_name, current_mask):
+        # Las opciones disponibles dependen de lo filtrado previamente por los selectores superiores
+        opciones_disponibles = sorted(df_raw.loc[current_mask, col_name].dropna().unique().tolist())
+        
+        # Si la opción previa seleccionada ya no existe en el subconjunto, multiselect la maneja nativamente
+        seleccion = st.multiselect(label, opciones_disponibles, placeholder="Todas")
+        
+        if seleccion:
+            return current_mask & df_raw[col_name].isin(seleccion)
+        return current_mask
 
-    filt("Ubicación / Canal",  C["ubi"])
-    filt("Región",             C["region"])
-    filt("Sucursal / Tienda",  C["sucursal"])
+    # Grupo 1: Filtros de Red/Estructura Comercial
+    m = aplicar_filtro_sidebar("Ubicación / Canal",  C["ubi"], m)
+    m = aplicar_filtro_sidebar("Región",             C["region"], m)
+    m = aplicar_filtro_sidebar("Sucursal / Tienda",  C["sucursal"], m)
+    
     st.markdown("<hr>", unsafe_allow_html=True)
-    filt("Línea",              C["linea"])
-    filt("Familia",            C["familia"])
-    filt("Marca",              C["marca"])
-    filt("Licencia",           C["licencia"])
-    filt("Temporada",          C["temporada"])
-    filt("Campaña",            C["campana"])
-    filt("Promo",              C["promo"])
+    
+    # Grupo 2: Filtros de Atributos de Producto
+    m = aplicar_filtro_sidebar("Línea",              C["linea"], m)
+    m = aplicar_filtro_sidebar("Familia",            C["familia"], m)
+    m = aplicar_filtro_sidebar("Marca",              C["marca"], m)
+    m = aplicar_filtro_sidebar("Licencia",           C["licencia"], m)
+    m = aplicar_filtro_sidebar("Temporada",          C["temporada"], m)
+    m = aplicar_filtro_sidebar("Campaña",            C["campana"], m)
+    m = aplicar_filtro_sidebar("Promo",              C["promo"], m)
 
-    m = _m[0]
     st.markdown("<hr>", unsafe_allow_html=True)
 
     solo_stock = st.checkbox("Solo con stock > 0")
@@ -242,6 +253,7 @@ with st.sidebar:
         <div style='font-size:.68rem;color:rgba(255,255,255,.65);'>de {len(df_raw):,} registros</div>
     </div>""", unsafe_allow_html=True)
 
+# Dataset global filtrado
 df = df_raw[m]
 
 # ══════════════════════════════════════════════
@@ -379,7 +391,7 @@ with tab1:
 # TAB 2 — VISTA POR TIENDA
 with tab2:
     tiendas_disp = sorted(df[C["sucursal"]].astype(str).unique())
-    sel_t = st.selectbox("Tienda", tiendas_disp, label_visibility="collapsed", placeholder="Selecciona una tienda…")
+    sel_t = st.selectbox("Tienda", tiendas_disp, key="sel_tienda_tab2", label_visibility="collapsed", placeholder="Selecciona una tienda…")
     if sel_t:
         dt = df[df[C["sucursal"]].astype(str)==sel_t]
         ta,tb2,tc2,td2 = st.columns(4)
@@ -395,7 +407,8 @@ with tab2:
         with ca2:
             st.markdown("**Por Familia**")
             bf = (dt.groupby(C["familia"])[C["stock"]].sum().reset_index().query(f"{C['stock']} > 0").sort_values(C["stock"], ascending=True))
-            st.plotly_chart(bar_h(bf, C["familia"], C["stock"], [[0,"#fecdd3"],[1,R1]], max(280,len(bf)*34)), use_container_width=True)
+            # Se añade la clave explícita para evitar colisiones
+            st.plotly_chart(bar_h(bf, C["familia"], C["stock"], [[0,"#fecdd3"],[1,R1]], max(280,len(bf)*34), key="graph_bar_tab2"), use_container_width=True)
         with cb3:
             st.markdown("**Por Línea**")
             bl = (dt.groupby(C["linea"])[C["stock"]].sum().reset_index().sort_values(C["stock"], ascending=False))
@@ -426,7 +439,7 @@ with tab3:
         with ca3:
             st.markdown("**Familias con stock**")
             if not fam_stock.empty:
-                st.plotly_chart(bar_h(fam_stock, C["familia"], C["stock"], [[0,"#fecdd3"],[1,RD]], max(280, len(fam_stock)*34)), use_container_width=True)
+                st.plotly_chart(bar_h(fam_stock, C["familia"], C["stock"], [[0,"#fecdd3"],[1,RD]], max(280, len(fam_stock)*34), key="graph_bar_tab3"), use_container_width=True)
         with cb4:
             st.markdown("**Por Línea**")
             al = (dap[dap[C["stock"]]>0].groupby(C["linea"])[C["stock"]].sum().reset_index().sort_values(C["stock"], ascending=False))
@@ -443,7 +456,7 @@ with tab4:
     st.markdown("#### Detalle por Promoción")
 
     promos_disp = sorted(df[df[C["promo"]]!="SIN DSCT"][C["promo"]].unique().tolist())
-    sel_promo   = st.selectbox("Selecciona una promo", promos_disp, label_visibility="collapsed", placeholder="Selecciona una promoción…")
+    sel_promo   = st.selectbox("Selecciona una promo", promos_disp, key="sel_promo_tab4", label_visibility="collapsed", placeholder="Selecciona una promoción…")
     if sel_promo:
         dp = df[df[C["promo"]]==sel_promo]
 
@@ -477,7 +490,7 @@ with tab5:
     st.markdown("---")
     st.markdown("#### Detalle por Temporada")
     temps_disp = sorted(df[C["temporada"]].unique().tolist())
-    sel_temp   = st.selectbox("Selecciona temporada", temps_disp, label_visibility="collapsed", placeholder="Selecciona una temporada…")
+    sel_temp   = st.selectbox("Selecciona temporada", temps_disp, key="sel_temp_tab5", label_visibility="collapsed", placeholder="Selecciona una temporada…")
     if sel_temp:
         dtemp = df[df[C["temporada"]]==sel_temp]
         t1,t2,t3 = st.columns(3)
@@ -490,7 +503,8 @@ with tab5:
         with cta:
             bf_t = (dtemp.groupby(C["familia"])[C["stock"]].sum().reset_index().query(f"{C['stock']} > 0").sort_values(C["stock"], ascending=True))
             if not bf_t.empty:
-                st.plotly_chart(bar_h(bf_t, C["familia"], C["stock"], [[0,"#fecdd3"],[1,R1]], max(280,len(bf_t)*34)), use_container_width=True)
+                # Se añade una clave explícita para diferenciarlo completamente del gráfico de la Tab 2
+                st.plotly_chart(bar_h(bf_t, C["familia"], C["stock"], [[0,"#fecdd3"],[1,R1]], max(280,len(bf_t)*34), key="graph_bar_tab5"), use_container_width=True)
         with ctb:
             bl_t = (dtemp.groupby(C["linea"])[C["stock"]].sum().reset_index().sort_values(C["stock"], ascending=False))
             if not bl_t.empty:
